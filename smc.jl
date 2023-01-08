@@ -37,7 +37,7 @@ end
 ConvexExpr(expr_cvx, name) = ConvexExpr(expr_cvx, conic_form(expr_cvx), name)
 
 
-@enum SmcStatus SAT=0 UNSAT=1 IN_PROGRESS=2 FAILED=3
+@enum SmcStatus SAT=0 UNSAT=1 IN_PROGRESS=2 SOLVER_NOT_CALLED=3 FAILED=4
 
 #=
 We will also define operations
@@ -52,17 +52,14 @@ abstract type ConstraintSet end
 struct Conjunction <: ConstraintSet
 	exprs::Array{Expr}
 end
+And(constraints::Array{Expr}) = Conjunction(constraints)
+
 struct Disjunction <: ConstraintSet
 	exprs::Array{Expr}
 end
+Or(constraints::Array{Expr}) = Disjunction(constraints)
 
 ### SOLVING AND REPRESENTING THE SOLUTION
-
-# struct Selection has fields constraint:Literal, assignment: True or False
-struct Selection
-	expr::_Z3Expr
-	value::Bool
-end
 
 #=
 struct Solution
@@ -85,7 +82,7 @@ Then we solve it -> ADD [variable] = (convex, assignment)
 or variable -> assignment and list the vars with assignment = True
 Then we pick out the convex constraints: READ [variable] -> (convex, assignment)
 
-Formula has members:
+Problem has members:
 	constraints: And(...) and Or(...) combinations of literals
 	predicates: formulae over Boolean variables only (z3)
 	_constraint_predicates: abstract constraints,initialize as [] and fill by abstract!
@@ -93,14 +90,15 @@ Formula has members:
 	solution: Solution object or none if not solved
 	status: SAT, UNSAT, IN_PROGRESS, FAILED
 =#
-mutable struct Formula
+mutable struct Problem
 	constraints::ConstraintSet
 	predicates::Array{_Z3Expr}
 	constraint_predicates::Array{_Z3Expr}
-	mapping::Dict{String, Selection}
-	solution::Solution
+	mapping::Dict{String, Tuple{_Z3Expr, Bool}}
+	solution::Union{Solution, Nothing}
 	status::SmcStatus
 end
+Problem(constraints, predicates) = Problem(constraints, predicates, _Z3Expr[], Dict{String, Selection}(), nothing, SOLVER_NOT_CALLED)
 
 
 # Define a solve() procedure
@@ -110,3 +108,6 @@ end
 # 3. convex_solve!(Formula): Solves the constraints enabled in the mapping, placing the solution in 
 # 4. convex_cert!(Formula): Generates the IIS and adds it to Formula.predicates
 # solve! updates Formula.solution and Formula.status
+
+function abstract!(Formula)
+end
