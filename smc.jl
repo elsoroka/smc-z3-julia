@@ -19,14 +19,24 @@ import Z3.SolverAllocated  as _Z3Solver
 #   Adds a field for a Convex.jl expression
 #   expr returns the low-level representation given by Convex.conic_form
 
+# this is horrible but z3 causes it
+global _ctx = nothing
+
 abstract type Expr end
 
 struct BoolExpr <: Expr
 	expr::Union{_Z3Expr, Nothing}
 	name::String
+	# constructor
+	function BoolExpr(name)
+		global ctx
+		if ctx == nothing
+			ctx = Z3.Context()
+		end
+		return BoolExpr(Z3.bool_const(ctx,  name), name)
+	end
 end
-# constructor
-BoolExpr(name) = BoolExpr(nothing, name)
+
 
 struct ConvexExpr <: Expr
 	expr_cvx::_CvxExpr
@@ -52,12 +62,24 @@ abstract type ConstraintSet end
 struct Conjunction <: ConstraintSet
 	exprs::Array{Expr}
 end
-And(constraints::Array{Expr}) = Conjunction(constraints)
 
 struct Disjunction <: ConstraintSet
 	exprs::Array{Expr}
 end
+
+# convenience functions
+And(constraints::Array{Expr}) = Conjunction(constraints)
 Or(constraints::Array{Expr}) = Disjunction(constraints)
+function Not(a::Expr)
+	if typeof(a) == BoolExpr
+		return BoolExpr(z3.Not(a.expr), "!"+a.name)
+	elseif typeof(a) == ConvexExpr
+		throw("ERROR: Cannot negate a convex expression")
+	else
+		throw("ERROR: Unrecognized type $(typeof(a))")
+	end
+end
+Implies(a::Expr, b::Expr) = Or([Not(a),b])
 
 ### SOLVING AND REPRESENTING THE SOLUTION
 
@@ -93,12 +115,19 @@ Problem has members:
 mutable struct Problem
 	constraints::ConstraintSet
 	predicates::Array{_Z3Expr}
-	constraint_predicates::Array{_Z3Expr}
+	_constraint_predicates::Array{_Z3Expr}
 	mapping::Dict{String, Tuple{_Z3Expr, Bool}}
 	solution::Union{Solution, Nothing}
 	status::SmcStatus
+	# wow, an inner constructor
+	# https://docs.julialang.org/en/v1/manual/constructors/
+	function Problem(constraints, predicates)
+		
+		return Problem(constraints, predicates, _Z3Expr[],
+					   Dict{String,Selection}(), nothing, SOLVER_NOT_CALLED)
+	end
 end
-Problem(constraints, predicates) = Problem(constraints, predicates, _Z3Expr[], Dict{String, Selection}(), nothing, SOLVER_NOT_CALLED)
+
 
 
 # Define a solve() procedure
@@ -109,5 +138,52 @@ Problem(constraints, predicates) = Problem(constraints, predicates, _Z3Expr[], D
 # 4. convex_cert!(Formula): Generates the IIS and adds it to Formula.predicates
 # solve! updates Formula.solution and Formula.status
 
-function abstract!(Formula)
+# helper function for abstract
+function _assign!(constraints::ConstraintSet, name="a")
+	counter = 0
+	_constraint_predicates = _Z3Expr[]
+	mapping = Dict{String, Selection}()
+
+	for c in constraints
+		if typeof(c) == Disjunction
+			p, m = _assign!(c.exprs, name+str(counter))
+			push!(_constraint_predicates, Z3.Or(p))
+			for k in keys(m)
+				mapping[k] = m[k]
+			end
+			counter += 1
+
+		elseif typeof(c) == Conjunction
+			p, m = _assign!(c.exprs, name+str(counter))
+			push!(_constraint_predicates, Z3.And(p))
+			for k in keys(m)
+				mapping[k] = m[k]
+			end
+			counter += 1
+
+		elseif typeof(c) == ConvexExpr
+			varname = name+str(counter)
+			global ctx
+			var = Z3.bool_const(ctx, varname)
+			push!(_constraint_predicates, var)
+			mapping[varname] = c
+			counter += 1
+
+		elseif typeof(c) == BoolExpr
+			push!(_constraint_predicates, c)
+
+		else
+			raise("Unrecognized type "+typeof(c))
+end
+function abstract!(problem::Problem)
+
+end
+
+function sat_solve!(problem::Problem)
+end
+
+function convex_solve!(problem::Problem)
+end
+
+function convex_cert!(problem::Problem)
 end
