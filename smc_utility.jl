@@ -1,4 +1,9 @@
+
+import Convex.Constraint as CvxExpr
+import Convex.Variable as CvxVar
+
 include("z3_utility.jl")
+
 # Base type of variable
 VarType = Union{BoolExpr, CvxVar}
 

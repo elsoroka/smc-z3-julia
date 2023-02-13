@@ -1,7 +1,5 @@
 # utility functions and definitions
 
-import Convex.Constraint as CvxExpr
-import Convex.Variable as CvxVar
 import Z3
 import Z3.ExprAllocated    as _Z3Expr
 import Z3.ContextAllocated as _Z3Context
@@ -163,6 +161,7 @@ function Var(m::Int, n::Int, t::Symbol, name="")
 		error("Unrecognized variable type $t")
 	end
 end
+Var(t::Symbol, name="") = Var(1, t, name)
 
 
 ### EXPRESSION ###
@@ -222,11 +221,7 @@ ExprType = Union{BoolExpr, CvxExpr}
 # Initializing z3 expressions (helper)
 function _z3_allocate(context::_Z3Context, shape::Tuple, name)
 	if length(shape) == 1
-		if shape[1] == 1
-			return Z3.bool_const(context, "$name")
-		else
-			return [Z3.bool_const(context, "$(name)_$i") for i=1:shape[1]]
-		end
+		return [Z3.bool_const(context, "$(name)_$i") for i=1:shape[1]]
 	elseif length(shape) == 2
 		result = Array{_Z3Expr}(undef, shape)
 		for i=1:shape[1]
@@ -311,7 +306,7 @@ function Problem(predicates::Array{BoolExpr})
 		context = predicates[1].context
 	else
 		context = Z3.Context()
-		_z3_initialize!.(predicates, context)
+		map((pred) -> _z3_initialize!(pred, context), predicates)
 	end
 	return Problem(predicates, context, Z3.Solver(context), :UNSAT)
 end
@@ -333,7 +328,14 @@ function solve!(p::Problem)
 	status = Z3.check(p.solver)
 	# https://github.com/Z3Prover/z3/blob/master/src/api/julia/z3jl.cpp#L359
 	# statuses are 0, 1, 2
-	p.status = (:UNSAT, :SAT, :UNKNOWN)[status]
+	if status == Z3.sat
+		p.status = :SAT
+	elseif status == Z3.unsat
+		p.status == :UNSAT
+	else
+		p.status == :UNKNOWN
+	end
+
 	# pull values out of z3 (there seems to be no better way to do this?)
 	m = Z3.get_model(p.solver)
 	assignment = Dict{String, Bool}()
@@ -348,11 +350,8 @@ end
 function assign!(expr::BoolExpr, assignment::Dict{String, Bool})
 	# base case
 	if expr.op == :Identity
-		# a single valued variable
-		if length(expr) == 1
-			expr.value = assignment[expr.name]
 		# a 1D array
-		elseif length(expr.shape) == 1
+		if length(expr.shape) == 1
 					expr.value = Array{Bool}(undef, expr.shape[1])
 			expr.value .= [assignment["$(expr.name)_$i"] for i=1:expr.shape[1]]
 		# a 2D array
@@ -373,6 +372,7 @@ end
 
 
 # SELF TEST
+#=
 x = Var(2, :Real)
 z1 = Var(2, :Bool, "z1")
 z2 = Var(2,3, :Bool, "z2")
@@ -385,3 +385,4 @@ prob = Problem(expr)
 solve!(prob)
 println(z1.value)
 println(z2.value)
+=#
