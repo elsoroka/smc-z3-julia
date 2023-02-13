@@ -1,85 +1,42 @@
-# Code layout
-# Long-term code goals
-# Convex.jl
 
-import Convex.Constraint as _CvxExpr
-import Z3
-import Z3.ExprAllocated    as _Z3Expr
-import Z3.ContextAllocated as _Z3Context
-import Z3.SolverAllocated  as _Z3Solver
-# https://github.com/ahumenberger/Z3.jl
+import Convex.Constraint as CvxExpr
+import Convex.Variable as CvxVar
 
-# What the code should do:
-# Define an abstract type for a literal
-# Literal has fields "name" and "expr".
-# This type should subtype as:
-# Boolean
-#   where expr is a (z3) Boolean variable, True or False
-# Convex
-#   Adds a field for a Convex.jl expression
-#   expr returns the low-level representation given by Convex.conic_form
+include("z3_utility.jl") # TODO fix this import so we only import the useful parts
 
-# this is horrible but z3 causes it
-global _ctx = nothing
+# Base type of variable and expr (constraint)
+VarType  = Union{BoolExpr, CvxVar}
+ExprType = Union{BoolExpr, CvxExpr}
 
-abstract type Expr end
-
-struct BoolExpr <: Expr
-	expr::Union{_Z3Expr, Nothing}
-	name::String
-	# constructor
-	function BoolExpr(name)
-		global ctx
-		if ctx == nothing
-			ctx = Z3.Context()
+# Use these to initialize a variable
+function Var(n::Int, t::Symbol, name="")
+	if t == :Real
+		return CvxVar(n)
+	elseif t == :Bool
+		if length(name) == 0
+			error("Must provide a name to initialize a Bool var")
 		end
-		return BoolExpr(Z3.bool_const(ctx,  name), name)
-	end
-end
-
-
-struct ConvexExpr <: Expr
-	expr_cvx::_CvxExpr
-	expr::Any # conic form of expr_cvx
-	name::String
-end
-#constructor
-ConvexExpr(expr_cvx, name) = ConvexExpr(expr_cvx, conic_form(expr_cvx), name)
-
-
-@enum SmcStatus SAT=0 UNSAT=1 IN_PROGRESS=2 SOLVER_NOT_CALLED=3 FAILED=4
-
-#=
-We will also define operations
-And(...)
-Or(...)
-which operate on a splatted list of Literals
-And and Or return type ConstraintSet
-=#
-
-abstract type ConstraintSet end
-
-struct Conjunction <: ConstraintSet
-	exprs::Array{Expr}
-end
-
-struct Disjunction <: ConstraintSet
-	exprs::Array{Expr}
-end
-
-# convenience functions
-And(constraints::Array{Expr}) = Conjunction(constraints)
-Or(constraints::Array{Expr}) = Disjunction(constraints)
-function Not(a::Expr)
-	if typeof(a) == BoolExpr
-		return BoolExpr(z3.Not(a.expr), "!"+a.name)
-	elseif typeof(a) == ConvexExpr
-		throw("ERROR: Cannot negate a convex expression")
+		return BoolExpr(n, name)
 	else
-		throw("ERROR: Unrecognized type $(typeof(a))")
+		error("Unrecognized variable type $t")
 	end
 end
-Implies(a::Expr, b::Expr) = Or([Not(a),b])
+
+function Var(m::Int, n::Int, t::Symbol, name="")
+	if t == :Real
+		return CvxVar(m,n)
+	elseif t == :Bool
+		if length(name) == 0
+			error("Must provide a name to initialize a Bool var")
+		end
+		return BoolExpr(m,n, name)
+	else
+		error("Unrecognized variable type $t")
+	end
+end
+
+Var(t::Symbol, name="") = Var(1, t, name)
+
 
 ### SOLVING AND REPRESENTING THE SOLUTION
 
@@ -87,13 +44,13 @@ Implies(a::Expr, b::Expr) = Or([Not(a),b])
 struct Solution
 contains members:
 	status: SAT, UNSAT, IN_PROGRESS, FAILED
-	bool_vars: dict mapping Boolean var names to true/false if SAT
-	real_vars: dict mapping real var names to real values if SAT
+	bool_vars: Boolean variables where z.value is set if SAT
+	real_vars: cvx variables where x.value is set if SAT
 =#
 struct Solution
-	status::SmcStatus
-	bool_vars::Dict{String, Bool}
-	real_vars::Dict{String, AbstractFloat}
+	status::Symbol # SAT, UNSAT, UNKNOWN, IN_PROGRESS
+	bool_vars::Array{BoolExpr}
+	real_vars::Array{CvxVar}
 end
 
 #=
@@ -112,19 +69,19 @@ Problem has members:
 	solution: Solution object or none if not solved
 	status: SAT, UNSAT, IN_PROGRESS, FAILED
 =#
-mutable struct Problem
-	constraints::ConstraintSet
-	predicates::Array{_Z3Expr}
-	_constraint_predicates::Array{_Z3Expr}
-	mapping::Dict{String, Tuple{_Z3Expr, Bool}}
+mutable struct SmcProblem
+	constraints::Expr
+	predicates::Array{BoolExpr}
+	_constraint_predicates::Array{BoolExpr}
+	mapping::Dict{String, Tuple{BoolExpr, Bool}} # 
 	solution::Union{Solution, Nothing}
-	status::SmcStatus
+	status::Symbol
 	# wow, an inner constructor
 	# https://docs.julialang.org/en/v1/manual/constructors/
-	function Problem(constraints, predicates)
+	function SmcProblem(constraints, predicates)
 		
-		return Problem(constraints, predicates, _Z3Expr[],
-					   Dict{String,Selection}(), nothing, SOLVER_NOT_CALLED)
+		return new(constraints, predicates, _Z3Expr[],
+					   Dict{String,Tuple{_Z3Expr, Bool}}(), nothing, :UNSAT)
 	end
 end
 
@@ -139,14 +96,19 @@ end
 # solve! updates Formula.solution and Formula.status
 
 # helper function for abstract
-function _assign!(constraints::ConstraintSet, name="a")
+function _assign!(constraints::Union{Expr, Array{Expr}}, name="a")
 	counter = 0
 	_constraint_predicates = _Z3Expr[]
-	mapping = Dict{String, Selection}()
-
-	for c in constraints
+	mapping = Dict{String, Tuple{_Z3Expr, Bool}}()
+	# TODO define iteration correctly
+	if (typeof(constraints) == Conjunction) || (typeof(constraints) == Disjunction)
+		constraint_list = constraints.exprs
+	else
+		constraint_list = [constraints,]
+	end
+	for c in constraint_list
 		if typeof(c) == Disjunction
-			p, m = _assign!(c.exprs, name+str(counter))
+			p, m = _assign!(c.exprs, "$name$counter")
 			push!(_constraint_predicates, Z3.Or(p))
 			for k in keys(m)
 				mapping[k] = m[k]
@@ -154,7 +116,7 @@ function _assign!(constraints::ConstraintSet, name="a")
 			counter += 1
 
 		elseif typeof(c) == Conjunction
-			p, m = _assign!(c.exprs, name+str(counter))
+			p, m = _assign!(c.exprs, "$name$counter")
 			push!(_constraint_predicates, Z3.And(p))
 			for k in keys(m)
 				mapping[k] = m[k]
@@ -162,28 +124,59 @@ function _assign!(constraints::ConstraintSet, name="a")
 			counter += 1
 
 		elseif typeof(c) == ConvexExpr
-			varname = name+str(counter)
-			global ctx
-			var = Z3.bool_const(ctx, varname)
+			varname = "$name$counter"
+			global _ctx
+			var = Z3.bool_const(_ctx, varname)
 			push!(_constraint_predicates, var)
 			mapping[varname] = c
 			counter += 1
 
 		elseif typeof(c) == BoolExpr
-			push!(_constraint_predicates, c)
+			push!(_constraint_predicates, c.expr)
 
 		else
-			raise("Unrecognized type "+typeof(c))
+			throw("Unrecognized type $(typeof(c))")
+		end
+	end
+	return _constraint_predicates, mapping
 end
-function abstract!(problem::Problem)
+
+function abstract!(problem::SmcProblem)
+	problem._constraint_predicates, problem.mapping = _assign!(problem.constraints)
+	# now we have all the z3 predicates associated with items in problem.constraints
+	println("Generated\n"+str(problem._constraint_predicates))
+end
+
+function sat_solve!(problem::SmcProblem)
+	global _ctx
+	s = Z3.Solver(_ctx)
+	add(s, problem._constraint_predicates)
+	add(s, problem.predicates)
+	status = check(s)
+	println("SAT status: "+str(status))
+	return status
+end
+
+function convex_solve!(problem::SmcProblem)
+	println("Unimplemented")
+end
+
+function convex_cert!(problem::SmcProblem)
+	println("Unimplemented")
+end
+
+function smc_solve!(problem::SmcProblem)
+	abstract!(problem)
+	status = sat_solve!(problem)
 
 end
 
-function sat_solve!(problem::Problem)
-end
+# self test
+x = Var(2, :Real)
+y = Var(2, :Real)
+z = Var(1, :Bool, "z")
 
-function convex_solve!(problem::Problem)
-end
-
-function convex_cert!(problem::Problem)
-end
+constraints = [x >= 0.0, y >= -1.0, x <= 5.0 ∨ y <= 5.0, z ∨ x >= 10.0]
+predicates = [~z,]
+prob = Problem(constraints, predicates)
+abstract!(prob)
