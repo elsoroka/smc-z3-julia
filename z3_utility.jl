@@ -42,10 +42,11 @@ if z1n and z2n are not initialized
 #      between an array of size n and an array of size (n,m)
 #      so you'd end up naming z1_1_1,...,z1_n_1.
 #      this is itself not so bad but suggests a bad code architecture! Augh.
+abstract type AbstractBoolExpr end
 
-mutable struct BoolExpr
+mutable struct BoolExpr <: AbstractBoolExpr
 	op       :: Symbol
-	children :: Array{BoolExpr}
+	children :: Array{AbstractBoolExpr}
 	name     :: String
 	shape    :: Tuple
 	# z3_expr is the same shape as children
@@ -83,8 +84,8 @@ f(a...) = [a...]
 broadcast_collect(exprs::Array{T}) where T <: Array = f.(exprs...)
 
 # https://docs.julialang.org/en/v1/manual/interfaces/#man-interface-array
-Base.size(e::BoolExpr) = e.shape
-Base.length(e::BoolExpr) = prod(size(e))
+Base.size(e::AbstractBoolExpr) = e.shape
+Base.length(e::AbstractBoolExpr) = prod(size(e))
 
 function getindex(e::BoolExpr, idx::Int)
 	if isnothing(e.context)
@@ -132,43 +133,11 @@ end
 	# Of course we won't do such things regularly but it will be good to have them work.
 =#
 
-
-# Base type of variable
-VarType = Union{BoolExpr, CvxVar}
-
-# Use these to initialize a variable
-function Var(n::Int, t::Symbol, name="")
-	if t == :Real
-		return CvxVar(n)
-	elseif t == :Bool
-		if length(name) == 0
-			error("Must provide a name to initialize a Bool var")
-		end
-		return BoolExpr(n, name)
-	else
-		error("Unrecognized variable type $t")
-	end
-end
-function Var(m::Int, n::Int, t::Symbol, name="")
-	if t == :Real
-		return CvxVar(m,n)
-	elseif t == :Bool
-		if length(name) == 0
-			error("Must provide a name to initialize a Bool var")
-		end
-		return BoolExpr(m,n, name)
-	else
-		error("Unrecognized variable type $t")
-	end
-end
-Var(t::Symbol, name="") = Var(1, t, name)
-
-
 ### EXPRESSION ###
 # An expression is built from variables
 
 # To combine n variables, use these functions
-function and(zs::Array{BoolExpr})
+function and(zs::Array{T}) where T <: AbstractBoolExpr
 	for i=1:length(zs)-1
 		if !is_broadcastable(size(zs[i]), size(zs[i+1]))
 			error("Unable to & variables of shapes $(size(zs[i])) and $(size(zs[i+1]))")
@@ -186,7 +155,7 @@ function and(zs::Array{BoolExpr})
 	end
 end
 
-function or(zs::Array{BoolExpr})
+function or(zs::Array{T}) where T <: AbstractBoolExpr
 	for i=1:length(zs)-1
 		if !is_broadcastable(size(zs[i]), size(zs[i+1]))
 			error("Unable to | variables of shapes $(size(zs[i].shape)) and $(size(zs[i+1].shape))")
@@ -205,18 +174,11 @@ function or(zs::Array{BoolExpr})
 end
 
 # Here are more expressions
-~(z::BoolExpr)                = BoolExpr(:Not, [z,], "~$(z.name)", z.shape, z.z3_expr, z.context, nothing)
-∧(z1::BoolExpr, z2::BoolExpr) = and([z1, z2])
-∨(z1::BoolExpr, z2::BoolExpr) = or([z1, z2])
-⟹(z1::BoolExpr, z2::BoolExpr) = or([(~z1), z2])
+~(z::AbstractBoolExpr) = BoolExpr(:Not, [z,], "~$(z.name)", z.shape, z.z3_expr, z.context, nothing)
+∧(z1::AbstractBoolExpr, z2::AbstractBoolExpr) = and([z1, z2])
+∨(z1::AbstractBoolExpr, z2::AbstractBoolExpr) = or([z1, z2])
+⟹(z1::AbstractBoolExpr, z2::AbstractBoolExpr) = or([(~z1), z2])
 
-ExprType = Union{BoolExpr, CvxExpr}
-
-# this is a hack for naming the z3 variables we should not use
-# https://stackoverflow.com/questions/32928524/julia-introspection-get-name-of-variable-passed-to-function
-#macro varname(arg)
-	#string(arg)
-#end
 
 # Initializing z3 expressions (helper)
 function _z3_allocate(context::_Z3Context, shape::Tuple, name)
@@ -372,10 +334,8 @@ end
 
 
 # SELF TEST
-#=
-x = Var(2, :Real)
-z1 = Var(2, :Bool, "z1")
-z2 = Var(2,3, :Bool, "z2")
+z1 = BoolExpr(2, "z1")
+z2 = BoolExpr(2,3, "z2")
 
 expr = (z1∧z2)⟹z1
 println(expr)
@@ -385,4 +345,3 @@ prob = Problem(expr)
 solve!(prob)
 println(z1.value)
 println(z2.value)
-=#
