@@ -1,5 +1,5 @@
-# Unsightly interface
-#=
+# Original interface
+
 using Z3
 
 ctx = Context()
@@ -20,15 +20,17 @@ m = get_model(s)
 for (k, v) in consts(m)
     println("$k = $v")
 end
-=#
-#=
+
+# Result is
+#= 
 CheckResult(0x00000001)
 z1 = false
 z2 = true
-
 =#
 
-# non unsightly
+
+
+# New interface
 include("utility.jl")
 
 z1 = Var(:Bool, "z1")
@@ -41,9 +43,36 @@ solve!(prob)
 println(prob.status)
 println("z1 = $(z1.value)")
 println("z2 = $(z2.value)")
-
+# Result is
 #=
 SAT
 z1 = Bool[0]
 z2 = Bool[1]
 =#
+
+# Notes from meeting
+# C functions are easy to wrap in Julia
+# Look at how the C++ wrapping is done
+# If there are functions that are missing we can add them
+# TO DO: Add the missing functions
+
+# Thoughts on JuliaZ3.jl
+#=
+Convex.jl takes a parse tree and puts it to a solver
+If you have to go through the convex tree construction then
+You write a language which is compatible with Convex.jl where if the problem is convex then it calls Convex.jl
+and if the problem is not convex it calls Convex.jl to create the convex expr tree and appends the tree to the nonconvex part
+and feeds the whole thing to z3
+If it's completely convex 
+
+# TO DO Talk to Kochenderfer about who is really good at Julia and can help advise
+# "This could turn into something that is both a nice paper and something people actually use, which is very rare" ~Lall
+=#
+
+
+
+# Desired interface
+# x <= 1 ∨ y <= 1
+# convex.jl
+# x <= 1, y <= 1
+

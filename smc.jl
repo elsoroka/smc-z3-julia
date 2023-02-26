@@ -40,7 +40,8 @@ NodeType = Union{CvxConstraint, BoolExpr, SmcExpr}
 SmcExpr(expr::Array{T})             where T <: NodeType = SmcExpr(:Identity, expr, size(expr))
 SmcExpr(op::Symbol, expr::Array{T}) where T <: NodeType = SmcExpr(op, expr, size(expr))
 
-~(e ::NodeType)               = SmcExpr(:Not, [e,])
+# this prevents double negations
+~(e ::NodeType)               = e.op == :Not ? SmcExpr(:Identity, e.children) : SmcExpr(:Not, [e,])
 ∧(e1::NodeType, e2::NodeType) = SmcExpr(:And, [e1, e2])
 ∨(e1::NodeType, e2::NodeType) = SmcExpr(:Or, [e1, e2])
 ⟹(e1::NodeType, e2::NodeType) = (~e1) ∨ e2
@@ -59,19 +60,19 @@ end
 
 SmcProblem(constraints::Array{SmcExpr}) = SmcProblem(constraints, Array{BoolExpr}[], :UNSAT)
 
-# abstract! constructs a matching expr tree in abstract_constraints where all cvx constraints
+# abstraction! constructs a matching expr tree in abstract_constraints where all cvx constraints
 # are replaced by BoolExprs
 # recursion by multiple dispatch!
 # base cases
-_assign(expr::BoolExpr, name="a") = expr
+_assign(expr::BoolExpr,      name="a") = expr
 _assign(expr::CvxConstraint, name="a") = BoolExpr(1, name)
 # recursive case
 function _assign(expr::SmcExpr, name="a")
 	if expr.op == :Identity
 		return _assign(expr.children[1])
-		
+
 	elseif expr.op == :Not
-		return _assign(expr.children[1])
+		return ~(_assign(expr.children[1]))
 
 	elseif expr.op == :And
 		return and(map( (c::Tuple{Int, NodeType}) -> _assign(c[2], "$(name)_$(c[1])"),
@@ -85,6 +86,18 @@ function _assign(expr::SmcExpr, name="a")
 end
 function abstraction!(prob::SmcProblem)
 	prob.abstract_constraints = map(_assign, prob.constraints)
+end
+
+matches(expr1::LeafType, expr2::LeafType) = true
+matches(expr1::SmcExpr, expr2::SmcExpr) = (length(expr1.children) == length(expr2.children) &&
+										  all(map( matches, zip(expr1.children, expr2.children))))
+# c_construct generates a convex problem
+# TODO eventually this will handle caching conic_form! from Convex.jl to speed up
+c_construct(c_expr::CvxConstraint, b_expr::BoolExpr) = b_expr.value ? c_expr : nothing
+function c_construct(prob::SmcProblem)
+	assert(length(prob.constraints) == length(prob.abstract_constraints) &&
+		   all(matches.(prob.constraints, prob.abstract_constraints)))
+	constraints = map( c_construct, zip(prob.constraints, prob.abstract_constraints))
 end
 
 #=
@@ -113,3 +126,5 @@ println(expr2)
 problem = SmcProblem([expr1, expr2 ∧ expr3])
 abstraction!(problem)
 println(problem.abstract_constraints)
+println(length(problem.constraints) == length(problem.abstract_constraints))
+println(matches.(problem.constraints, problem.abstract_constraints))

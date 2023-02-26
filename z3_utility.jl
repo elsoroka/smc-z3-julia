@@ -42,11 +42,11 @@ if z1n and z2n are not initialized
 #      between an array of size n and an array of size (n,m)
 #      so you'd end up naming z1_1_1,...,z1_n_1.
 #      this is itself not so bad but suggests a bad code architecture! Augh.
-abstract type AbstractBoolExpr end
+abstract type AbstractExpr end
 
-mutable struct BoolExpr <: AbstractBoolExpr
+mutable struct BoolExpr <: AbstractExpr
 	op       :: Symbol
-	children :: Array{AbstractBoolExpr}
+	children :: Array{AbstractExpr}
 	name     :: String
 	shape    :: Tuple
 	# z3_expr is the same shape as children
@@ -84,8 +84,8 @@ f(a...) = [a...]
 broadcast_collect(exprs::Array{T}) where T <: Array = f.(exprs...)
 
 # https://docs.julialang.org/en/v1/manual/interfaces/#man-interface-array
-Base.size(e::AbstractBoolExpr) = e.shape
-Base.length(e::AbstractBoolExpr) = prod(size(e))
+Base.size(e::AbstractExpr) = e.shape
+Base.length(e::AbstractExpr) = prod(size(e))
 
 function getindex(e::BoolExpr, idx::Int)
 	if isnothing(e.context)
@@ -137,7 +137,7 @@ end
 # An expression is built from variables
 
 # To combine n variables, use these functions
-function and(zs::Array{T}) where T <: AbstractBoolExpr
+function and(zs::Array{T}) where T <: AbstractExpr
 	for i=1:length(zs)-1
 		if !is_broadcastable(size(zs[i]), size(zs[i+1]))
 			error("Unable to & variables of shapes $(size(zs[i])) and $(size(zs[i+1]))")
@@ -155,7 +155,7 @@ function and(zs::Array{T}) where T <: AbstractBoolExpr
 	end
 end
 
-function or(zs::Array{T}) where T <: AbstractBoolExpr
+function or(zs::Array{T}) where T <: AbstractExpr
 	for i=1:length(zs)-1
 		if !is_broadcastable(size(zs[i]), size(zs[i+1]))
 			error("Unable to | variables of shapes $(size(zs[i].shape)) and $(size(zs[i+1].shape))")
@@ -174,10 +174,10 @@ function or(zs::Array{T}) where T <: AbstractBoolExpr
 end
 
 # Here are more expressions
-~(z::AbstractBoolExpr) = BoolExpr(:Not, [z,], "~$(z.name)", z.shape, z.z3_expr, z.context, nothing)
-∧(z1::AbstractBoolExpr, z2::AbstractBoolExpr) = and([z1, z2])
-∨(z1::AbstractBoolExpr, z2::AbstractBoolExpr) = or([z1, z2])
-⟹(z1::AbstractBoolExpr, z2::AbstractBoolExpr) = or([(~z1), z2])
+~(z::BoolExpr) = BoolExpr(:Not, [z,], "~$(z.name)", z.shape, z.z3_expr, z.context, nothing)
+∧(z1::AbstractExpr, z2::AbstractExpr) = and([z1, z2])
+∨(z1::AbstractExpr, z2::AbstractExpr) = or([z1, z2])
+⟹(z1::BoolExpr, z2::AbstractExpr) = or([(~z1), z2])
 
 
 # Initializing z3 expressions (helper)
@@ -332,7 +332,7 @@ function assign!(expr::BoolExpr, assignment::Dict{String, Bool})
 	# TODO assign values here too but too lazy rn
 end
 
-
+#=
 # SELF TEST
 z1 = BoolExpr(2, "z1")
 z2 = BoolExpr(2,3, "z2")
@@ -345,3 +345,4 @@ prob = Problem(expr)
 solve!(prob)
 println(z1.value)
 println(z2.value)
+=#
