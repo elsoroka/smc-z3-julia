@@ -292,20 +292,20 @@ function solve!(p::Problem)
 	# statuses are 0, 1, 2
 	if status == Z3.sat
 		p.status = :SAT
+		# pull values out of z3 (there seems to be no better way to do this?)
+		m = Z3.get_model(p.solver)
+		assignment = Dict{String, Bool}()
+		for (k, v) in Z3.consts(m)
+			#println("$k = $v")
+	    	assignment[string(k)] = (string(v) == "true")
+		end
+		map((pred) -> assign!(pred, assignment), p.predicates)
 	elseif status == Z3.unsat
 		p.status == :UNSAT
 	else
 		p.status == :UNKNOWN
 	end
 
-	# pull values out of z3 (there seems to be no better way to do this?)
-	m = Z3.get_model(p.solver)
-	assignment = Dict{String, Bool}()
-	for (k, v) in Z3.consts(m)
-		#println("$k = $v")
-    	assignment[string(k)] = (string(v) == "true")
-	end
-	map((pred) -> assign!(pred, assignment), p.predicates)
 end
 
 # Given an assignment, traverse the BoolExpr to assign values
