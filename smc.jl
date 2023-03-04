@@ -2,6 +2,7 @@
 import Convex
 import Convex.Constraint as CvxConstraint
 import Convex.Variable as CvxVar
+import Base.show, Base.string, Base.~, Base.length, Base.size
 
 include("z3_utility.jl") # TODO fix this import so we only import the useful parts
 
@@ -39,6 +40,20 @@ NodeType = Union{CvxConstraint, BoolExpr, SmcExpr}
 # Define better constructors
 SmcExpr(expr::Array{T})             where T <: NodeType = SmcExpr(:Identity, expr, size(expr))
 SmcExpr(op::Symbol, expr::Array{T}) where T <: NodeType = SmcExpr(op, expr, size(expr))
+
+Base.show(io::IO, expr::SmcExpr) = print(io, string(expr))
+
+function Base.string(expr::SmcExpr, indent=0)
+	if expr.op == :Identity	
+		return "$(repeat(" | ", indent))$(expr.op) $(expr.shape)\n"
+	else
+		res = "$(repeat(" | ", indent))$(expr.op)\n"
+		for e in expr.children
+			res *= string(e, indent+1)
+		end
+		return res
+	end
+end
 
 # this prevents double negations
 ~(e ::NodeType)               = e.op == :Not ? SmcExpr(:Identity, e.children) : SmcExpr(:Not, [e,])
@@ -88,15 +103,12 @@ function abstraction!(prob::SmcProblem)
 	prob.abstract_constraints = map(_assign, prob.constraints)
 end
 
-matches(expr1::LeafType, expr2::LeafType) = true
-matches(expr1::SmcExpr, expr2::SmcExpr) = (length(expr1.children) == length(expr2.children) &&
-										  all(map( matches, zip(expr1.children, expr2.children))))
+
 # c_construct generates a convex problem
 # TODO eventually this will handle caching conic_form! from Convex.jl to speed up
 c_construct(c_expr::CvxConstraint, b_expr::BoolExpr) = b_expr.value ? c_expr : nothing
 function c_construct(prob::SmcProblem)
-	assert(length(prob.constraints) == length(prob.abstract_constraints) &&
-		   all(matches.(prob.constraints, prob.abstract_constraints)))
+	assert(length(prob.constraints) == length(prob.abstract_constraints))
 	constraints = map( c_construct, zip(prob.constraints, prob.abstract_constraints))
 end
 
@@ -127,4 +139,4 @@ problem = SmcProblem([expr1, expr2 ∧ expr3])
 abstraction!(problem)
 println(problem.abstract_constraints)
 println(length(problem.constraints) == length(problem.abstract_constraints))
-println(matches.(problem.constraints, problem.abstract_constraints))
+println(problem.constraints, "\n\n", problem.abstract_constraints)
