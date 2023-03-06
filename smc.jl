@@ -144,6 +144,42 @@ function c_construct(prob::SmcProblem)
 	return Convex.minimize(0.0, C)
 end
 
+# solve sum-of-slack problem which is equivalent to original when all slack vars are 0
+# returns a new, solved convex problem and list of slack variables
+function c_solve_ssf(c_prob, δ=1e-3, cvx_solver=SCS.Optimizer())
+	s = Convex.Variable(length(c_prob.constraints))
+	add_s(a::Tuple{CvxConstraint, CvxVar}) = a[1].head == :<= ? a[1].rhs += a[2] : a[1].lhs += a[2]
+	C_ssf = map( add_s, zip(C_ssf, s) )
+	ssf_prob = Convex.minimize(Convex.sum(convex.abs(s)), C_ssf)
+	Convex.solve!(ssf_prob)
+	return ssf_prob, s
+end
+
+# algorithm 2 in Shoukry et al. page 13
+function iis(prob::SmcProblem, c_prob, δ=1e-3, cvx_solver=SCS.Optimizer())
+	# step 1: get the optimal slack in each constraint
+	ssf_prob, s = c_solve_ssf(c_prob, δ, cvx_solver)
+	iis_cert = Array{BoolExpr}(undef, 0)
+	# sort the constraint set by slack values, low to high (default order)
+	sorted_const = c_prob.constraints[sortperm(s.value)]
+	# search linearly for UNSAT certificate
+	status = :SAT
+	counter = 2
+	iis_temp = [sorted_const[1], sorted_const[counter]]
+
+	while status == :SAT
+		prob = Convex.minimize(0.0, iis_temp)) # TODO δ should be here
+		Convex.solve!(prob)
+		#if status != :optimal
+			#iis_cert = # TODO NEXT here we need to retrieve the abstraction variable a corresponding to the constraints in iis_temp
+		#else
+			#counter += 1
+		#end
+		# push!(iis_temp, sorted_const[counter]
+	end
+	return iis_cert
+end
+
 
 function solve!(prob::SmcProblem, δ=1e-3, cvx_solver=SCS.Optimizer())
 	abstraction!(prob)
