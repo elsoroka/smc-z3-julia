@@ -77,6 +77,11 @@ end
 ∨(e1::NodeType, e2::NodeType) = SmcExpr(:Or, NodeType[e1, e2])
 ⟹(e1::NodeType, e2::NodeType) = (~e1) ∨ e2
 
+# Cleaner way to define variables
+Variable(t::Symbol, name="") = Variable(1, t, name)
+Variable(n::Int, t::Symbol, name="") = t == :Bool ? BoolExpr(n, name) : CvxVar(n)
+Variable(n::Int, m::Int, t::Symbol, name="") = t == :Bool ? BoolExpr(n,m,name) : CvxVar(n,m)
+
 # TODO Can we define advanced STL operations (always, eventually, etc)
 
 
@@ -168,7 +173,7 @@ end
 # solve sum-of-slack problem which is equivalent to original when all slack vars are 0
 # returns a new, solved convex problem and list of slack variables
 # TODO Problem area - doesn't work.
-function c_solve_ssf(c_prob, δ=1e-3, cvx_solver=SCS.Optimizer())
+function c_solve_ssf(c_prob, δ=1e-3, cvx_solver=SCS.Optimizer)
 	s = Convex.Variable(length(c_prob.constraints))
 	# Add the slack variable to the appropriate side of the constraint
 	function add_s(a::Tuple) :: Convex.Constraint
@@ -181,20 +186,21 @@ function c_solve_ssf(c_prob, δ=1e-3, cvx_solver=SCS.Optimizer())
 	ssf_prob = Convex.minimize(Convex.sum(Convex.abs(s)))
 	ssf_prob.constraints += C_ssf
 
-	Convex.solve!(ssf_prob, cvx_solver)
+	Convex.solve!(ssf_prob, cvx_solver, silent_solver=true)
 	return ssf_prob, s
 end
 
 # algorithm 2 in Shoukry et al. page 13
-function iis(prob::SmcProblem, c_prob, δ=1e-3, cvx_solver=SCS.Optimizer())
+function iis(prob::SmcProblem, c_prob, δ=1e-3, cvx_solver=SCS.Optimizer)
 	# step 1: get the optimal slack in each constraint
 	ssf_prob, s = c_solve_ssf(c_prob, δ)
 	iis_cert = Array{BoolExpr}(undef, 0)
 	
 	# if there's only one constraint in which case do this
-	if length(s) == 1
-		iis_temp = c_prob.constraints
-		return cert(iis_temp)
+	if length(s) <= 1
+		println("s is too small! $s")
+		iis_cert = map( (m) -> ~(m.abstract_expr), filter( (m) -> m.cvx_expr in sorted_const, prob.mapping))
+		return iis_cert
 	end
 
 	# sort the constraint set by slack values, low to high (default order)
@@ -209,9 +215,9 @@ function iis(prob::SmcProblem, c_prob, δ=1e-3, cvx_solver=SCS.Optimizer())
 	while status == :SAT
 		c_prob = Convex.minimize(0.0, sorted_const[1:counter]) # TODO δ should be here
 		println(c_prob)
-		Convex.solve!(c_prob, cvx_solver)
-		println("\nstatus = $(c_prob.status) ", c_prob.status == :OPTIMAL)
-		if c_prob.status != :OPTIMAL
+		Convex.solve!(c_prob, SCS.Optimizer, silent_solver=true)
+		println("\nstatus = $(c_prob.status) ", string(c_prob.status) == "OPTIMAL")
+		if string(c_prob.status) != "OPTIMAL"
 			status = :UNSAT
 			# retrieve the abstraction variable a corresponding to the constraints in iis_temp
 			iis_cert = map( (m) -> ~(m.abstract_expr), filter( (m) -> m.cvx_expr in sorted_const[1:counter], prob.mapping))
@@ -225,30 +231,39 @@ function iis(prob::SmcProblem, c_prob, δ=1e-3, cvx_solver=SCS.Optimizer())
 end
 
 
-function solve!(prob::SmcProblem, δ=1e-3, cvx_solver=SCS.Optimizer())
+function solve!(prob::SmcProblem, δ=1e-3, cvx_solver=SCS.Optimizer, max_iters=100)
 	abstraction!(prob)
-	# this is a call to JuliaZ3
-	sat_prob = Problem(prob.abstract_constraints)
-	solve!(sat_prob)
-	# check for exit conditions
-	if sat_prob.status == :UNKNOWN
-		error("SAT problem failed")
-	elseif sat_prob.status == :UNSAT
-		println("Problem has no solution")
-		prob.status == :UNSAT
-		return
+	i=0
+	while i < max_iters
+		sat_prob = Problem(prob.abstract_constraints)
+		# this is a call to JuliaZ3
+		solve!(sat_prob)
+		# check for exit conditions
+		if sat_prob.status == :UNKNOWN
+			error("SAT problem failed")
+		elseif sat_prob.status == :UNSAT
+			println("Problem has no solution")
+			prob.status == :UNSAT
+			return
+		end
+		# c_construct generates a convex problem
+		cvx_prob = c_construct(prob)
+		# this is a call to Convex.jl # TODO eventually we will cache conic_form! and use that instead
+		Convex.solve!(cvx_prob, cvx_solver, silent_solver=true)
+		if string(cvx_prob.status) == "OPTIMAL"
+			return
+		else
+			# generate IIS certificate
+			cc = iis(prob, cvx_prob, δ)
+			prob.abstract_constraints = vcat(prob.abstract_constraints, cc)
+		end
+		i += 1
 	end
-	# c_construct generates a convex problem
-	cvx_prob = c_construct(prob)
-	# this is a call to Convex.jl # TODO eventually we will cache conic_form! and use that instead
-	Convex.solve!(cvx_prob, cvx_solver)
-	# generate IIS certificate
-	cc = iis(prob, cvx_prob, δ)
-	prob.abstract_constraints = vcat(prob.abstract_constraints, cc)
 end
 
 
 # SELF TEST
+#=
 using SCS
 x = CvxVar(1)
 y = CvxVar(2)
@@ -264,3 +279,4 @@ problem = SmcProblem(NodeType[expr1, expr2 ∨ expr3,
 solve!(problem)
 println("x = $(x.value), y = $(y.value)")
 println("expr1 = $(z1.value)")
+=#
