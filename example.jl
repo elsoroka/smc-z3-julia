@@ -30,6 +30,10 @@ z2 = true
 
 
 
+
+
+
+
 # New interface
 include("utility.jl")
 
@@ -76,3 +80,21 @@ If it's completely convex
 # convex.jl
 # x <= 1, y <= 1
 
+#=
+x = Variable(2, :Real)
+z = Variable(1, :Bool, "z")
+
+expr1 = ~z
+# Satisfying one OR the other constraint
+expr2 = (x >= 1.0) ∨ (x <= -1.0)
+expr3 = ~expr1 # this would just be z
+
+problem = SmcProblem([expr1, expr2 ∧ expr3])
+
+# this is the part I'm still working on
+solve!(problem)
+
+# get the solution
+println("x = $(x.value)")
+println("z = $(z.value)")
+=#
