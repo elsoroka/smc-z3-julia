@@ -73,8 +73,8 @@ end
 
 # this prevents double negations
 ~(e ::NodeType)               = e.op == :Not ? SmcExpr(:Identity, e.children) : SmcExpr(:Not, [e,])
-∧(e1::NodeType, e2::NodeType) = SmcExpr(:And, [e1, e2])
-∨(e1::NodeType, e2::NodeType) = SmcExpr(:Or, [e1, e2])
+∧(e1::NodeType, e2::NodeType) = SmcExpr(:And, NodeType[e1, e2])
+∨(e1::NodeType, e2::NodeType) = SmcExpr(:Or, NodeType[e1, e2])
 ⟹(e1::NodeType, e2::NodeType) = (~e1) ∨ e2
 
 # TODO Can we define advanced STL operations (always, eventually, etc)
@@ -92,13 +92,13 @@ end
 
 # Problem struct
 mutable struct SmcProblem
-	constraints          :: Array{SmcExpr}
+	constraints          :: Array{NodeType}
 	abstract_constraints :: Array{BoolExpr}
 	mapping              :: Array{SmcMapping}
 	status               :: Symbol # :OPTIMAL, :UNSAT, :UNKNOWN
 end
 
-SmcProblem(constraints::Array{SmcExpr}) = SmcProblem(constraints, Array{BoolExpr}[], Array{SmcMapping}[], :UNSAT)
+SmcProblem(constraints::Array{NodeType}) = SmcProblem(constraints, Array{BoolExpr}[], Array{SmcMapping}[], :UNSAT)
 
 # abstraction! constructs a matching expr tree in abstract_constraints where all cvx constraints
 # are replaced by BoolExprs
@@ -252,12 +252,15 @@ end
 using SCS
 x = CvxVar(1)
 y = CvxVar(2)
+z1 = BoolExpr(1, "z1")
 
-expr1 = SmcExpr(:Not, [BoolExpr(1, "z1")], nothing, (1,))
+expr1 = ~z1
 expr2 = (x >= 1.0) ∨ (x <= 10.0)
 expr3 = ~expr1
-
-problem = SmcProblem([expr1, expr2 ∨ expr3, (y <= 5.0)∧(y >= 10.0), (y >= 1.0) ∨ (y + x <= 1.0)])
+println(expr2∨expr3)
+problem = SmcProblem(NodeType[expr1, expr2 ∨ expr3,
+					(y <= 5.0)∨(y >= 10.0),
+					(y >= 1.0) ∨ (y + x <= 1.0)])
 solve!(problem)
 println("x = $(x.value), y = $(y.value)")
-println("expr1 = $(expr1.value)")
+println("expr1 = $(z1.value)")
