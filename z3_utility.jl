@@ -151,7 +151,7 @@ function and(zs::Array{T}) where T <: AbstractExpr
 	if isnothing(zs[1].context)
 		return BoolExpr(:And, zs, name, output_shape, Array{_Z3Expr}[], nothing, nothing)
 	else
-		return BoolExpr(:And, zs, name, output_shape, Z3.and([zi.z3_expr for zi in zs]), zs[1].context, nothing)
+		return BoolExpr(:And, zs, name, output_shape, [Z3.and(reduce(hcat, [zi.z3_expr for zi in zs])),], zs[1].context, nothing)
 	end
 end
 
@@ -169,7 +169,7 @@ function or(zs::Array{T}) where T <: AbstractExpr
 	if isnothing(zs[1].context)
 		return BoolExpr(:Or, zs, name, output_shape, Array{_Z3Expr}[], nothing, nothing)
 	else
-		return BoolExpr(:Or, zs, name, output_shape, Z3.or([zi.z3_expr for zi in zs]), zs[1].context, nothing)
+		return BoolExpr(:Or, zs, name, output_shape, [Z3.or(reduce(hcat,[zi.z3_expr for zi in zs])),], zs[1].context, nothing)
 	end
 end
 
