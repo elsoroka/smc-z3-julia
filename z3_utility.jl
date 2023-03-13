@@ -345,4 +345,15 @@ prob = Problem(expr)
 solve!(prob)
 println(z1.value)
 println(z2.value)
+
+z1 = BoolExpr(1, "z1")
+z2 = BoolExpr(1, "z2")
+
+predicates = [z1 ∨ z2, ~z1 ∨ z2, ~z1 ∨ ~z2]
+prob = Problem(predicates)
+solve!(prob)
+
+println(prob.status)
+println("z1 = $(z1.value)")
+println("z2 = $(z2.value)")
 =#

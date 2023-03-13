@@ -1,5 +1,5 @@
 # Original interface
-
+#=
 using Z3
 
 ctx = Context()
@@ -20,7 +20,7 @@ m = get_model(s)
 for (k, v) in consts(m)
     println("$k = $v")
 end
-
+=#
 # Result is
 #= 
 CheckResult(0x00000001)
@@ -35,10 +35,10 @@ z2 = true
 
 
 # New interface
-include("utility.jl")
+include("z3_utility.jl")
 
-z1 = Var(:Bool, "z1")
-z2 = Var(:Bool, "z2")
+z1 = BoolExpr(1, "z1")
+z2 = BoolExpr(1, "z2")
 
 predicates = [z1 ∨ z2, ~z1 ∨ z2, ~z1 ∨ ~z2]
 prob = Problem(predicates)
