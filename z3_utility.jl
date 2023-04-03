@@ -238,7 +238,7 @@ initialize!(expr::BoolExpr) = _z3_initialize!(expr, Z3.Context())
 Base.show(io::IO, expr::BoolExpr) = print(io, string(expr))
 function Base.string(expr::BoolExpr, indent=0)
 	if expr.op == :Identity	
-		return "$(repeat(" | ", indent))$(expr.name) $(expr.shape)$(!isnothing(expr.context) ? ": $(expr.z3_expr)" : "")\n"
+		return "$(repeat(" | ", indent))$(expr.name) $(expr.shape)$(!isnothing(expr.context) ? ": $(expr.z3_expr) = $(expr.value)" : "")\n"
 	else
 		res = "$(repeat(" | ", indent))$(expr.op)\n"
 		for e in expr.children
@@ -264,12 +264,8 @@ end
 
 function Problem(predicates::Array{BoolExpr})
 	# We want to initialize the Z3Context and solver
-	if length(predicates) > 0 && !isnothing(predicates[1].context)
-		context = predicates[1].context
-	else
-		context = Z3.Context()
-		map((pred) -> _z3_initialize!(pred, context), predicates)
-	end
+	context = Z3.Context()
+	map((pred) -> _z3_initialize!(pred, context), predicates)
 	return Problem(predicates, context, Z3.Solver(context), :UNSAT)
 end
 Problem(predicate::BoolExpr) = Problem([predicate,])
@@ -284,6 +280,8 @@ function solve!(p::Problem)
 	# this comes about because we have an array of BoolExprs
 	# but internally each BoolExpr has a list of Z3Exprs
 	# because we are covering a single-variable C++ wrapper API in a vector interface
+	p.solver = Z3.Solver(p.context)
+	Z3.reset(p.solver)
 	for expr in p.predicates
 		map((pred) -> Z3.add(p.solver, pred), expr.z3_expr)
 	end
