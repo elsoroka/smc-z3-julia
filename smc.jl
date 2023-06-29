@@ -1,12 +1,13 @@
 # New file since we now have the typing down
-import Convex, SCS
-import Convex.Constraint as CvxConstraint
-import Convex.Variable as CvxVar
+import SCS
+import Convex as CVX
 import Base.show, Base.string, Base.~, Base.length, Base.size
 
-include("z3_utility.jl") # TODO fix this import so we only import the useful parts
+# include("z3_utility.jl") # TODO fix this import so we only import the useful parts
+push!(LOAD_PATH, "../../../../research/BooleanSatisfiability.jl/src/")
+import BooleanSatisfiability as SAT
 
-LeafType = Union{CvxConstraint, BoolExpr}
+LeafType = Union{CVX.Constraint, SAT.BoolExpr}
 
 # SmcExpr is a tree-like structure that can have a mirrored BoolExpr tree
 #= EXAMPLE:
@@ -26,7 +27,7 @@ and SmcExpr(∨).abstraction points to BoolExpr(∨).
 mutable struct SmcExpr
 	op          :: Symbol # :And, :Or, :Not (be careful)
 	children    :: Array{Union{LeafType, SmcExpr}}
-	abstraction :: Union{Nothing, BoolExpr}
+	abstraction :: Union{Nothing, SAT.BoolExpr}
 	shape       :: Tuple
 	
 	# returns True if there is a child of type t
@@ -42,15 +43,15 @@ mutable struct SmcExpr
 	end
 	
 	# Default constructor - defining it here prevents there from being a constructor without this correctness check.
-	function SmcExpr(op::Symbol, children::Array{T}, abstraction::Union{Nothing, BoolExpr}, shape::Tuple) where T <: Union{LeafType, SmcExpr}
-		if op == :Not && length(children) >= 1 && check_exists(CvxConstraint, children)
+	function SmcExpr(op::Symbol, children::Array{T}, abstraction::Union{Nothing, SAT.BoolExpr}, shape::Tuple) where T <: Union{LeafType, SmcExpr}
+		if op == :Not && length(children) >= 1 && check_exists(CVX.Constraint, children)
 			error("Cannot construct a negated convex constraint.")
 		end
 		return new(op, children, abstraction, shape)
 	end
 end
 
-NodeType = Union{CvxConstraint, BoolExpr, SmcExpr}
+NodeType = Union{CVX.Constraint, SAT.BoolExpr, SmcExpr}
 
 
 # Define better constructors
@@ -72,11 +73,15 @@ function Base.string(expr::SmcExpr, indent=0)
 end
 
 # this prevents double negations
-~(e ::NodeType)               = e.op == :Not ? SmcExpr(:Identity, e.children) : SmcExpr(:Not, [e,])
+#~(e ::NodeType)               = e.op == :Not ? SmcExpr(:Identity, e.children) : SmcExpr(:Not, [e,])
 ∧(e1::NodeType, e2::NodeType) = SmcExpr(:And, NodeType[e1, e2])
 ∨(e1::NodeType, e2::NodeType) = SmcExpr(:Or, NodeType[e1, e2])
 ⟹(e1::NodeType, e2::NodeType) = (~e1) ∨ e2
 
+and(es::Array{T}) where T <: NodeType = SmcExpr(:And, es)
+or(es::Array{T}) where T <: NodeType = SmcExpr(:Or, es)
+
+#=
 # Cleaner way to define variables
 Variable(t::Symbol, name="") = Variable(1, t, name)
 function Variable(n::Int, t::Symbol, name="")
@@ -97,6 +102,7 @@ function Variable(n::Int, m::Int, t::Symbol, name="")
 		error("Unrecognized type $t")
 	end
 end
+=#
 # TODO Can we define advanced STL operations (always, eventually, etc)
 
 
@@ -106,27 +112,27 @@ end
 # It stores references so it shouldn't be inefficient
 # An array of SmcMapping objects corresponds to the M object in the paper.
 mutable struct SmcMapping
-	abstract_expr :: BoolExpr
-	cvx_expr      :: CvxConstraint
+	abstract_expr :: SAT.BoolExpr
+	cvx_expr      :: CVX.Constraint
 end
 
 # Problem struct
 mutable struct SmcProblem
 	constraints          :: Array{NodeType}
-	abstract_constraints :: Array{BoolExpr}
+	abstract_constraints :: Array{SAT.BoolExpr}
 	mapping              :: Array{SmcMapping}
 	status               :: Symbol # :OPTIMAL, :UNSAT, :UNKNOWN
 end
 
-SmcProblem(constraints::Array{NodeType}) = SmcProblem(constraints, Array{BoolExpr}[], Array{SmcMapping}[], :UNSAT)
+SmcProblem(constraints::Array{T}) where T <: NodeType = SmcProblem(constraints, SAT.BoolExpr[], SmcMapping[], :UNSAT)
 
 # abstraction! constructs a matching expr tree in abstract_constraints where all cvx constraints
 # are replaced by BoolExprs
 # recursion by multiple dispatch!
 # base cases
-_assign!(expr::BoolExpr, mapping::Array{SmcMapping}, name="a") = expr
-function _assign!(expr::CvxConstraint, mapping::Array{SmcMapping}, name="a")
-	b = BoolExpr(1, name)
+_assign!(expr::SAT.BoolExpr, mapping::Array{SmcMapping}, name="a") = expr
+function _assign!(expr::CVX.Constraint, mapping::Array{SmcMapping}, name="a")
+	b = SAT.Bool(name)
 	push!(mapping, SmcMapping(b, expr))
 	return b
 end
@@ -137,13 +143,13 @@ function _assign!(expr::SmcExpr, mapping::Array{SmcMapping}, name="a")
 		bool_expr = _assign!(expr.children[1], mapping)
 
 	elseif expr.op == :Not
-		bool_expr = ~(_assign!(expr.children[1], mapping))
+		bool_expr = SAT.not(_assign!(expr.children[1], mapping))
 
 	elseif expr.op == :And
-		bool_expr = and(map( (c::Tuple{Int, NodeType}) -> _assign!(c[2], mapping, "$(name)_$(c[1])"),
+		bool_expr = SAT.and(map( (c::Tuple{Int, NodeType}) -> _assign!(c[2], mapping, "$(name)_$(c[1])"),
 			            enumerate(expr.children) ))
 	elseif expr.op == :Or
-		bool_expr = or(map(  (c::Tuple{Int, NodeType}) -> _assign!(c[2], mapping, "$(name)_$(c[1])"),
+		bool_expr = SAT.or(map(  (c::Tuple{Int, NodeType}) -> _assign!(c[2], mapping, "$(name)_$(c[1])"),
 			            enumerate(expr.children) ))
 	else
 		error("Unrecognized operation $(expr.op)")
@@ -153,7 +159,7 @@ end
 
 function abstraction!(prob::SmcProblem)
 	prob.mapping = SmcMapping[]
-	prob.abstract_constraints = map( (c) -> _assign!(c, prob.mapping), prob.constraints )
+	prob.abstract_constraints = map( (tp) -> _assign!(tp[2], prob.mapping, "a$(tp[1])"), enumerate(prob.constraints) )
 end
 
 
@@ -164,34 +170,33 @@ from a tree-like SmcExpr structure, we want to select the convex constraints cor
 # TODO eventually this will handle caching conic_form! from Convex.jl to speed up
 
 # base case - both SmcExpr and BoolExpr trees have a BoolExpr leaf
-c_construct!(c_expr::BoolExpr, b_expr::BoolExpr, C::Array{CvxConstraint}) = nothing
-#c_construct!(mapping::SmcMapping{BoolExpr}, C::Array{CvxConstraint}) = nothing
+c_construct!(c_expr::SAT.BoolExpr, b_expr::SAT.BoolExpr, C::Array{CVX.Constraint}) = nothing
 
 # base case - SmcExpr tree has a Convex leaf and matching BoolExpr tree has a BoolExpr leaf
-c_construct!(c_expr::CvxConstraint, b_expr::BoolExpr, C::Array{CvxConstraint}) = all(b_expr.value) ? push!(C, c_expr) : nothing
-#c_construct!(mapping::SmcMapping{CvxConstraint}, C::Array{CvxConstraint}) = all(mapping.abstract_expr.value) ? push!(C, mapping.cvx_expr) : nothing
+c_construct!(c_expr::CVX.Constraint, b_expr::SAT.BoolExpr, C::Array{CVX.Constraint}) = all(b_expr.value) ? push!(C, c_expr) : nothing
 
 # recursive case, pass through
-c_construct!(c_expr::SmcExpr, b_expr::BoolExpr, C::Array) =
+c_construct!(c_expr::SmcExpr, b_expr::SAT.BoolExpr, C::Array) =
 	map( (c) -> c_construct!(c[1], c[2], C), zip(c_expr.children, b_expr.children) )
-#c_construct!(mapping::SmcMapping{SmcExpr}, C::Array) =
-#	map( (c) -> c_construct!(c[1], c[2], C), zip(mapping.cvx_expr.children, mapping.abstract_expr.children) )
 
 # top level
 function c_construct(prob::SmcProblem)
 	# the (c) -> c_construct(c[1], c[2], C) arises because zip makes tuples
-	C = Array{CvxConstraint}(undef, 0)
+	C = Array{CVX.Constraint}(undef, 0)
 	map( (c) -> c_construct!(c[1], c[2], C), zip(prob.constraints, prob.abstract_constraints) )
 	return Convex.minimize(0.0, C)
 end
 
 # solve sum-of-slack problem which is equivalent to original when all slack vars are 0
 # returns a new, solved convex problem and list of slack variables
-# TODO Problem area - doesn't work.
-function c_solve_ssf(c_prob, δ=1e-3, cvx_solver=SCS.Optimizer)
-	s = Convex.Variable(length(c_prob.constraints))
+function c_solve_ssf(c_prob, s::CVX.Variable, δ=1e-3, cvx_solver=SCS.Optimizer)
+	# TODO URGENT - 4/10/23 - this is the culprit.
+	# We shouldn't make NEW slack variables.
+	# We should attach them to the Problem and reuse the same ones.
+	#s = Convex.Variable(length(c_prob.constraints))
 	# Add the slack variable to the appropriate side of the constraint
-	function add_s(a::Tuple) :: Convex.Constraint
+	# This constructs a new constraint, otherwise we get multiple slack variables added to the same constraint because it would be modified in place.
+	function add_s(a::Tuple) :: CVX.Constraint
 		cons = a[1]
 		if cons.head == :<=
 			return cons.lhs <= cons.rhs + a[2]
@@ -199,14 +204,22 @@ function c_solve_ssf(c_prob, δ=1e-3, cvx_solver=SCS.Optimizer)
 			return cons.lhs + a[2] >= cons.rhs
 		end
 	end
+	L = length(c_prob.constraints)
+	if length(s) < L
+		s = Convex.hcat([s, Convex.Variable(length(c_prob.constraints) - length(s))])
+		println("Expanded s to $(length(s))")
+	end
+
 	C_ssf = Convex.Constraint[]
 	for pair in zip(c_prob.constraints, s)
 		push!(C_ssf, add_s(pair))
 	end
 
 	# Generate the sum-of-slack problem
-	ssf_prob = Convex.minimize(Convex.sum(Convex.abs(s)))
+	ssf_prob = Convex.minimize(Convex.sum(Convex.abs(s[1:L])))
 	ssf_prob.constraints += C_ssf
+	println("unused # $(length(s[L+1:end]))")
+	ssf_prob.constraints += s[L+1:end] == 0.0 # unused slack variables
 
 	Convex.solve!(ssf_prob, cvx_solver, silent_solver=true)
 	return ssf_prob, s
@@ -214,17 +227,17 @@ end
 
 # algorithm 2 in Shoukry et al. page 13
 # TODO THERE IS STILL A BUG IN HERE
-function iis(prob::SmcProblem, c_prob, δ=1e-3, cvx_solver=SCS.Optimizer)
+function iis(prob::SmcProblem, c_prob, s::CVX.Variable, δ=1e-3, cvx_solver=SCS.Optimizer)
 	# step 1: get the optimal slack in each constraint
-	ssf_prob, s = c_solve_ssf(c_prob, δ, cvx_solver)
-	iis_cert = Array{BoolExpr}(undef, 0)
+	ssf_prob, s = c_solve_ssf(c_prob, s, δ, cvx_solver)
+	iis_cert = Array{SAT.Expr}(undef, 0)
 		# sort the constraint set by slack values, low to high (default order)
 	# the sorting is wrong! be more careful
 	sorted_const = c_prob.constraints[sortperm(reshape(s.value, (length(s),)) )]
 	#println("sorted\n$(s.value[sortperm(reshape(s.value, (length(s),)))])")
-	println("optval $(ssf_prob.optval)")
+	println("iis_optval $(ssf_prob.optval)")
 	
-	# if there's only one constraint in which case do this
+	# if there's only one constraint in which case do this, i don't think this ever happens
 	if length(s) <= 1
 		println("s is too small! $s")
 		iis_cert = map( (m) -> ~(m.abstract_expr), filter( (m) -> m.cvx_expr in sorted_const, prob.mapping))
@@ -234,20 +247,19 @@ function iis(prob::SmcProblem, c_prob, δ=1e-3, cvx_solver=SCS.Optimizer)
 	# search linearly for UNSAT certificate
 	status = :SAT
 	counter = length(sorted_const)
-	iis_temp = [sorted_const[1], sorted_const[counter]]
+	iis_temp = Convex.Constraint[sorted_const[1], sorted_const[counter]]
 	#println("iis_temp length $(length(iis_temp))")
-
 	while status == :SAT
 		c_prob = Convex.minimize(0.0, iis_temp) # TODO δ should be here
-		ssf_prob, s = c_solve_ssf(c_prob, δ, cvx_solver)
+		ssf_prob, s = c_solve_ssf(c_prob, s, δ, cvx_solver)
 
-		println("\nstatus = $(ssf_prob.status) $(ssf_prob.optval)")
+		println("\niis_status = $(ssf_prob.status) $(ssf_prob.optval)")
 
 		if ssf_prob.optval > δ #string(c_prob.status) != "OPTIMAL"
 			status = :UNSAT
 			# retrieve the abstraction variable a corresponding to the constraints in iis_temp
-			negations = reduce(vcat, map( (m) -> ~(m.abstract_expr), filter( (m) -> m.cvx_expr in iis_temp, prob.mapping)))
-			iis_cert = or(negations)
+			negations = reduce(vcat, map( (m) -> SAT.not(m.abstract_expr), filter( (m) -> m.cvx_expr in iis_temp, prob.mapping)))
+			iis_cert = SAT.or(negations)
 			println("counter=$counter, iis_cert =\n$iis_cert")
 
 		else
@@ -255,40 +267,42 @@ function iis(prob::SmcProblem, c_prob, δ=1e-3, cvx_solver=SCS.Optimizer)
 			push!(iis_temp, sorted_const[counter])
 		end
 	end
-	return iis_cert
+	return iis_cert, s
 end
 
+# TODO the current issue is the IIS function is broken
+# it is NOT learning the IIS set
+# so all iterations have the same IIS set
 
-function solve!(prob::SmcProblem, δ=1e-3, cvx_solver=SCS.Optimizer, max_iters=100)
+
+function smc_solve!(prob::SmcProblem, δ=1e-3, cvx_solver=SCS.Optimizer, max_iters=100)
 	abstraction!(prob)
 	i=0
 	while i < max_iters
-		sat_prob = Problem(prob.abstract_constraints)
-		# this is a call to JuliaZ3
-		solve!(sat_prob)
+		# this is a call to Z3
+		status = SAT.sat!(SAT.and(prob.abstract_constraints))
 		# check for exit conditions
-		if sat_prob.status == :UNKNOWN
-			error("SAT problem failed")
-		elseif sat_prob.status == :UNSAT
+		if status == :UNKNOWN
+			error("solve! SAT problem failed")
+		elseif status == :UNSAT
 			println("Problem has no solution")
 			prob.status == :UNSAT
 			return
 		end
 		# c_construct generates a convex problem
 		cvx_prob = c_construct(prob)
+		s = CVX.Variable(length(cvx_prob.constraints))
 		# this is a call to Convex.jl # TODO eventually we will cache conic_form! and use that instead
-		#Convex.solve!(cvx_prob, cvx_solver, silent_solver=true)
-		ssf_prob, s = c_solve_ssf(cvx_prob, δ, cvx_solver)
-		println("optval $(ssf_prob.optval)")
+		ssf_prob, s = c_solve_ssf(cvx_prob, s, δ, cvx_solver)
+		println("solve! optval $(ssf_prob.optval)")
 		#println("sorted\n$(s.value[sortperm(reshape(s.value, (length(s),)))])")
-		# it fails because we are MODIFYING the constraints by adding slack variables!
-		# stupid bug!
 		if ssf_prob.optval < δ #string(cvx_prob.status) == "OPTIMAL"
 			prob.status = :SAT
+			println("solve! status is SAT")
 			return
 		else
 			# generate IIS certificate
-			cc = iis(prob, cvx_prob, δ)
+			cc, s = iis(prob, cvx_prob, s, δ)
 			prob.abstract_constraints = vcat(prob.abstract_constraints, cc)
 			println("\n\ncc = $(length(cc)) cons = $(length(prob.abstract_constraints))")
 		end

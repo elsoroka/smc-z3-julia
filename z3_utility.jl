@@ -48,7 +48,7 @@ mutable struct BoolExpr <: AbstractExpr
 	op       :: Symbol
 	children :: Array{AbstractExpr}
 	name     :: String
-	shape    :: Tuple
+	shape    :: Tuple{Vararg{Integer}}
 	# z3_expr is the same shape as children
 	z3_expr  :: Array{_Z3Expr}
 	# iff context is unitialized, z3_expr is empty
@@ -67,8 +67,9 @@ It is our hope the first case will happen here.
 # some more utilities
 squeeze(shape::Tuple) = Tuple([s for s in shape if s > 1])
 # Check if two shapes are broadcastable
+# TODO ASAP this is a bug
 is_broadcastable(shape1::Tuple, shape2::Tuple) =
-	all([dim1 == dim2 for (dim1, dim2) in zip(squeeze(shape1), squeeze(shape2))])
+	all([dim1 == dim2 || dim1 == 1 || dim2 == 1 for (dim1, dim2) in zip(shape1, shape2)])
 # Compute the size of a broadcasted list of shapes
 function broadcast_size(shapes::Array)
 	l_max = maximum([length(s) for s in shapes])
@@ -138,9 +139,14 @@ end
 
 # To combine n variables, use these functions
 function and(zs::Array{T}) where T <: AbstractExpr
+	# and of one z (or zero?) is z
+	if length(zs) < 2
+		return length(zs) == 1 ? zs[1] : nothing
+	end
+
 	for i=1:length(zs)-1
 		if !is_broadcastable(size(zs[i]), size(zs[i+1]))
-			error("Unable to & variables of shapes $(size(zs[i])) and $(size(zs[i+1]))")
+			throw(DimensionMismatch("Unable to & variables of shapes $(size(zs[i])) and $(size(zs[i+1]))"))
 		end
 		if zs[i].context != zs[i+1].context
 			error("Unable to & variables with different contexts")
@@ -156,9 +162,14 @@ function and(zs::Array{T}) where T <: AbstractExpr
 end
 
 function or(zs::Array{T}) where T <: AbstractExpr
+	# and of one z (or zero?) is z
+	if length(zs) < 2
+		return length(zs) == 1 ? zs[1] : nothing
+	end
+
 	for i=1:length(zs)-1
 		if !is_broadcastable(size(zs[i]), size(zs[i+1]))
-			error("Unable to | variables of shapes $(size(zs[i].shape)) and $(size(zs[i+1].shape))")
+			throw(DimensionMismatch("Unable to | variables of shapes $(size(zs[i].shape)) and $(size(zs[i+1].shape))"))
 		end
 		if zs[i].context != zs[i+1].context
 			error("Unable to | variables with different contexts")
@@ -193,7 +204,7 @@ function _z3_allocate(context::_Z3Context, shape::Tuple, name)
 		end
 		return result
 	else
-		error("Expression has unsupported size $(shape)")
+		throw(DimensionMismatch("Expression has unsupported size $(shape)"))
 	end
 end
 

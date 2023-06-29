@@ -32,8 +32,6 @@ z2 = true
 
 
 
-
-
 # New interface
 include("z3_utility.jl")
 
