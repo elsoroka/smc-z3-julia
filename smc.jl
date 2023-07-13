@@ -2,6 +2,7 @@
 import SCS
 import Convex as CVX
 import Base.show, Base.string, Base.~, Base.length, Base.size
+include("cvx_prettyprint.jl")
 
 # include("z3_utility.jl") # TODO fix this import so we only import the useful parts
 push!(LOAD_PATH, "../../../../research/BooleanSatisfiability.jl/src/")
@@ -45,7 +46,7 @@ mutable struct SmcExpr
 	# Default constructor - defining it here prevents there from being a constructor without this correctness check.
 	function SmcExpr(op::Symbol, children::Array{T}, abstraction::Union{Nothing, SAT.BoolExpr}, shape::Tuple) where T <: Union{LeafType, SmcExpr}
 		if op == :Not && length(children) >= 1 && check_exists(CVX.Constraint, children)
-			error("Cannot construct a negated convex constraint.")
+			@error "Cannot construct a negated convex constraint."
 		end
 		return new(op, children, abstraction, shape)
 	end
@@ -81,28 +82,6 @@ end
 and(es::Array{T}) where T <: NodeType = SmcExpr(:And, es)
 or(es::Array{T}) where T <: NodeType = SmcExpr(:Or, es)
 
-#=
-# Cleaner way to define variables
-Variable(t::Symbol, name="") = Variable(1, t, name)
-function Variable(n::Int, t::Symbol, name="")
-	if t == :Bool
-		return BoolExpr(n, name)
-	elseif t == :Real
-		return CvxVar(n)
-	else
-		error("Unrecognized type $t")
-	end
-end
-function Variable(n::Int, m::Int, t::Symbol, name="")
-	if t == :Bool
-		return BoolExpr(n,m, name)
-	elseif t == :Real
-		return CvxVar(n,m)
-	else
-		error("Unrecognized type $t")
-	end
-end
-=#
 # TODO Can we define advanced STL operations (always, eventually, etc)
 
 
@@ -152,7 +131,7 @@ function _assign!(expr::SmcExpr, mapping::Array{SmcMapping}, name="a")
 		bool_expr = SAT.or(map(  (c::Tuple{Int, NodeType}) -> _assign!(c[2], mapping, "$(name)_$(c[1])"),
 			            enumerate(expr.children) ))
 	else
-		error("Unrecognized operation $(expr.op)")
+		@error "Unrecognized operation $(expr.op)"
 	end
 	expr.abstraction = bool_expr
 end
@@ -207,7 +186,7 @@ function c_solve_ssf(c_prob, s::CVX.Variable, δ=1e-3, cvx_solver=SCS.Optimizer)
 	L = length(c_prob.constraints)
 	if length(s) < L
 		s = Convex.hcat([s, Convex.Variable(length(c_prob.constraints) - length(s))])
-		println("Expanded s to $(length(s))")
+		@warn "Expanded s to $(length(s))" # shouldn't need this
 	end
 
 	C_ssf = Convex.Constraint[]
@@ -218,7 +197,7 @@ function c_solve_ssf(c_prob, s::CVX.Variable, δ=1e-3, cvx_solver=SCS.Optimizer)
 	# Generate the sum-of-slack problem
 	ssf_prob = Convex.minimize(Convex.sum(Convex.abs(s[1:L])))
 	ssf_prob.constraints += C_ssf
-	println("unused # $(length(s[L+1:end]))")
+
 	ssf_prob.constraints += s[L+1:end] == 0.0 # unused slack variables
 
 	Convex.solve!(ssf_prob, cvx_solver, silent_solver=true)
@@ -235,13 +214,13 @@ function iis(prob::SmcProblem, c_prob, s::CVX.Variable, δ=1e-3, cvx_solver=SCS.
 	# the sorting is wrong! be more careful
 	sorted_const = c_prob.constraints[sortperm(reshape(s.value, (length(s),)) )]
 	#println("sorted\n$(s.value[sortperm(reshape(s.value, (length(s),)))])")
-	println("iis_optval $(ssf_prob.optval)")
+	@debug "iis_optval $(ssf_prob.optval)"
 	
 	# if there's only one constraint in which case do this, i don't think this ever happens
 	if length(s) <= 1
-		println("s is too small! $s")
-		iis_cert = map( (m) -> ~(m.abstract_expr), filter( (m) -> m.cvx_expr in sorted_const, prob.mapping))
-		return iis_cert
+		@error "s is too small! $s"
+		#iis_cert = map( (m) -> ~(m.abstract_expr), filter( (m) -> m.cvx_expr in sorted_const, prob.mapping))
+		#return iis_cert
 	end
 
 	# search linearly for UNSAT certificate
@@ -253,14 +232,13 @@ function iis(prob::SmcProblem, c_prob, s::CVX.Variable, δ=1e-3, cvx_solver=SCS.
 		c_prob = Convex.minimize(0.0, iis_temp) # TODO δ should be here
 		ssf_prob, s = c_solve_ssf(c_prob, s, δ, cvx_solver)
 
-		println("\niis_status = $(ssf_prob.status) $(ssf_prob.optval)")
+		@debug "iis_status in iis() = $(ssf_prob.status) $(ssf_prob.optval)"
 
 		if ssf_prob.optval > δ #string(c_prob.status) != "OPTIMAL"
 			status = :UNSAT
 			# retrieve the abstraction variable a corresponding to the constraints in iis_temp
 			negations = reduce(vcat, map( (m) -> SAT.not(m.abstract_expr), filter( (m) -> m.cvx_expr in iis_temp, prob.mapping)))
 			iis_cert = SAT.or(negations)
-			println("counter=$counter, iis_cert =\n$iis_cert")
 
 		else
 			counter -= 1
@@ -283,50 +261,37 @@ function smc_solve!(prob::SmcProblem, δ=1e-3, cvx_solver=SCS.Optimizer, max_ite
 		status = SAT.sat!(SAT.and(prob.abstract_constraints))
 		# check for exit conditions
 		if status == :UNKNOWN
-			error("solve! SAT problem failed")
+			@error "solve! SAT problem failed"
 		elseif status == :UNSAT
-			println("Problem has no solution")
+			@info "Problem has no solution"
 			prob.status == :UNSAT
 			return
 		end
 		# c_construct generates a convex problem
 		cvx_prob = c_construct(prob)
 		s = CVX.Variable(length(cvx_prob.constraints))
+		global varnames
+		varnames[s.id_hash] = "s_iter_$i"
+
 		# this is a call to Convex.jl # TODO eventually we will cache conic_form! and use that instead
 		ssf_prob, s = c_solve_ssf(cvx_prob, s, δ, cvx_solver)
-		println("solve! optval $(ssf_prob.optval)")
+		@debug "solve! optval $(ssf_prob.optval)"
+		@debug "Convex problem:"
+		for c in ssf_prob.constraints
+			@debug "$(prettyprint(c, varnames))"
+		end
+
 		#println("sorted\n$(s.value[sortperm(reshape(s.value, (length(s),)))])")
 		if ssf_prob.optval < δ #string(cvx_prob.status) == "OPTIMAL"
 			prob.status = :SAT
-			println("solve! status is SAT")
+			@debug "solve! status is SAT"
 			return
 		else
 			# generate IIS certificate
 			cc, s = iis(prob, cvx_prob, s, δ)
 			prob.abstract_constraints = vcat(prob.abstract_constraints, cc)
-			println("\n\ncc = $(length(cc)) cons = $(length(prob.abstract_constraints))")
 		end
 		i += 1
 	end
-	println("Reached max_iters $max_iters")
+	@warn "Reached max_iters $max_iters"
 end
-
-
-# SELF TEST
-#=
-using SCS
-x = CvxVar(1)
-y = CvxVar(2)
-z1 = BoolExpr(1, "z1")
-
-expr1 = ~z1
-expr2 = (x >= 1.0) ∨ (x <= 10.0)
-expr3 = ~expr1
-println(expr2∨expr3)
-problem = SmcProblem(NodeType[expr1, expr2 ∨ expr3,
-					(y <= 5.0)∨(y >= 10.0),
-					(y >= 1.0) ∨ (y + x <= 1.0)])
-solve!(problem)
-println("x = $(x.value), y = $(y.value)")
-println("expr1 = $(z1.value)")
-=#

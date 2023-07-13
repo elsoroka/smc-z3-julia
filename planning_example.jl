@@ -1,5 +1,6 @@
 include("smc.jl")
 push!(LOAD_PATH, "../../../../research/BooleanSatisfiability.jl/src/")
+ENV["JULIA_DEBUG"] = true
 import BooleanSatisfiability as SAT
 println("self test")
 import Convex
@@ -7,9 +8,11 @@ import Convex
 # In this problem we want to plan a 2D trajectory x,y over N steps
 # TODO we may complicate it later by adding a quadratic approximation to nonlinear dynamics
 
-N = 10
+N = 5
 x = Convex.Variable(N)
 y = Convex.Variable(N)
+global varnames = Dict(x.id_hash => "x", y.id_hash => "y")
+
 
 x_world = [0.,10.]
 y_world = [0.,5.]
@@ -47,18 +50,27 @@ function outside_box_in_interval(x, y, box, N1=1, N2=Inf)
     return reduce(vcat, map( (i) -> outside_box_at_step(x[i], y[i], box), N1:N2 ))
 end
 
-umax = 3.0
+umax = 5.0
 control_bounds = map( (i) -> Convex.square(x[i]) + Convex.square(y[i]) <= umax, 1:N )
 
 constraints = vcat(
     [x >= bounds[1], y >= bounds[2], x <= bounds[3], y <= bounds[4],
      x[1] == start[1], y[1] == start[2], x[end] == goal[1], y[end] == goal[2]],
-                   control_bounds,
+                  # control_bounds,
                    outside_box_in_interval(x, y, obs_1),
-                   outside_box_in_interval(x, y, obs_2),
-                   outside_box_in_interval(x, y, obs_3),
+                  # outside_box_in_interval(x, y, obs_2),
+                  # outside_box_in_interval(x, y, obs_3),
                   )
 
 prob = SmcProblem(constraints)
 smc_solve!(prob)
 #abstraction!(prob)
+println("all true:")
+println(x.value .>= bounds[1])
+println(x.value .<= bounds[3])
+println(y.value .>= bounds[2])
+println(y.value .<= bounds[4])
+println("$(x.value[1]) = $(start[1])\n$(y.value[1]) = $(start[2])
+$(x.value[end]) = $(goal[1])\n$(y.value[end]) = $(goal[2])")
+println(round.(x.value, digits=2))
+println(round.(y.value, digits=2))
