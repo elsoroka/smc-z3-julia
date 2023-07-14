@@ -14,7 +14,7 @@ end
 
 function prettyprint(a::Convex.AbstractExpr, varnames::Dict)
     childnames = map(c -> isa(c, Convex.Constant) ? string(c) : prettyprint(c, varnames), a.children)
-    if a.head ∈ [:+, :-, :*, :/]
+    if length(childnames) == 2 && a.head ∈ [:+, :-, :*, :/]
         return "$(childnames[1]) $(a.head) $(childnames[2])"
     elseif a.head == :index
         return "$(childnames[1])[$(a.inds)]"

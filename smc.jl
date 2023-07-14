@@ -97,13 +97,15 @@ end
 
 # Problem struct
 mutable struct SmcProblem
+	objective            :: Union{Convex.AbstractExpr, AbstractFloat}
 	constraints          :: Array{NodeType}
 	abstract_constraints :: Array{SAT.BoolExpr}
 	mapping              :: Array{SmcMapping}
 	status               :: Symbol # :OPTIMAL, :UNSAT, :UNKNOWN
 end
 
-SmcProblem(constraints::Array{T}) where T <: NodeType = SmcProblem(constraints, SAT.BoolExpr[], SmcMapping[], :UNSAT)
+SmcProblem(constraints::Array{T}) where T <: NodeType = SmcProblem(0.0, constraints, SAT.BoolExpr[], SmcMapping[], :UNSAT)
+SmcProblem(obj, constraints::Array{T}) where T <: NodeType = SmcProblem(obj, constraints, SAT.BoolExpr[], SmcMapping[], :UNSAT)
 
 # abstraction! constructs a matching expr tree in abstract_constraints where all cvx constraints
 # are replaced by BoolExprs
@@ -163,56 +165,60 @@ function c_construct(prob::SmcProblem)
 	# the (c) -> c_construct(c[1], c[2], C) arises because zip makes tuples
 	C = Array{CVX.Constraint}(undef, 0)
 	map( (c) -> c_construct!(c[1], c[2], C), zip(prob.constraints, prob.abstract_constraints) )
-	return Convex.minimize(0.0, C)
+	return C
+end
+
+# Add the slack variable to the appropriate side of the constraint
+# This constructs a new constraint, otherwise we get multiple slack variables added to the same constraint because it would be modified in place.
+function add_s(a::Tuple) :: CVX.Constraint
+	cons = a[1]
+	if cons.head == :<=
+		return cons.lhs <= cons.rhs + a[2]
+	elseif cons.head == :(==)
+		return cons.lhs == cons.rhs + a[2]
+	else # >=
+		return cons.lhs + a[2] >= cons.rhs
+	end
 end
 
 # solve sum-of-slack problem which is equivalent to original when all slack vars are 0
 # returns a new, solved convex problem and list of slack variables
-function c_solve_ssf(c_prob, s::CVX.Variable, δ=1e-3, cvx_solver=SCS.Optimizer)
+function c_solve_ssf(constraints, s::CVX.Variable, obj, δ=1e-3, cvx_solver=SCS.Optimizer)
 	# TODO URGENT - 4/10/23 - this is the culprit.
 	# We shouldn't make NEW slack variables.
 	# We should attach them to the Problem and reuse the same ones.
-	#s = Convex.Variable(length(c_prob.constraints))
-	# Add the slack variable to the appropriate side of the constraint
-	# This constructs a new constraint, otherwise we get multiple slack variables added to the same constraint because it would be modified in place.
-	function add_s(a::Tuple) :: CVX.Constraint
-		cons = a[1]
-		if cons.head == :<=
-			return cons.lhs <= cons.rhs + a[2]
-		else # >=
-			return cons.lhs + a[2] >= cons.rhs
-		end
-	end
-	L = length(c_prob.constraints)
+	#s = Convex.Variable(length(constraints))
+
+	L = length(constraints)
 	if length(s) < L
-		s = Convex.hcat([s, Convex.Variable(length(c_prob.constraints) - length(s))])
+		s = Convex.hcat([s, Convex.Variable(length(constraints) - length(s))])
 		@warn "Expanded s to $(length(s))" # shouldn't need this
 	end
 
 	C_ssf = Convex.Constraint[]
-	for pair in zip(c_prob.constraints, s)
+	for pair in zip(constraints, s)
 		push!(C_ssf, add_s(pair))
 	end
 
 	# Generate the sum-of-slack problem
-	ssf_prob = Convex.minimize(Convex.sum(Convex.abs(s[1:L])))
+	ssf_prob = Convex.minimize(Convex.sum(Convex.abs(s[1:L])) + obj)
 	ssf_prob.constraints += C_ssf
 
 	ssf_prob.constraints += s[L+1:end] == 0.0 # unused slack variables
 
-	Convex.solve!(ssf_prob, cvx_solver, silent_solver=true)
+	Convex.solve!(ssf_prob, cvx_solver; silent_solver=true)
 	return ssf_prob, s
 end
 
 # algorithm 2 in Shoukry et al. page 13
 # TODO THERE IS STILL A BUG IN HERE
-function iis(prob::SmcProblem, c_prob, s::CVX.Variable, δ=1e-3, cvx_solver=SCS.Optimizer)
+function iis(prob::SmcProblem, constraints, s::CVX.Variable, δ=1e-3, cvx_solver=SCS.Optimizer)
 	# step 1: get the optimal slack in each constraint
-	ssf_prob, s = c_solve_ssf(c_prob, s, δ, cvx_solver)
+	ssf_prob, s = c_solve_ssf(constraints, s, 0.0, δ, cvx_solver)
 	iis_cert = Array{SAT.Expr}(undef, 0)
 		# sort the constraint set by slack values, low to high (default order)
 	# the sorting is wrong! be more careful
-	sorted_const = c_prob.constraints[sortperm(reshape(s.value, (length(s),)) )]
+	sorted_const = constraints[sortperm(reshape(s.value, (length(s),)) )]
 	#println("sorted\n$(s.value[sortperm(reshape(s.value, (length(s),)))])")
 	@debug "iis_optval $(ssf_prob.optval)"
 	
@@ -229,13 +235,17 @@ function iis(prob::SmcProblem, c_prob, s::CVX.Variable, δ=1e-3, cvx_solver=SCS.
 	iis_temp = Convex.Constraint[sorted_const[1], sorted_const[counter]]
 	#println("iis_temp length $(length(iis_temp))")
 	while status == :SAT
-		c_prob = Convex.minimize(0.0, iis_temp) # TODO δ should be here
-		ssf_prob, s = c_solve_ssf(c_prob, s, δ, cvx_solver)
+		ssf_prob, s = c_solve_ssf(iis_temp, s, 0.0, δ, cvx_solver)
 
 		@debug "iis_status in iis() = $(ssf_prob.status) $(ssf_prob.optval)"
 
-		if ssf_prob.optval > δ #string(c_prob.status) != "OPTIMAL"
+		if sum(abs.(s.value)) > δ #string(c_prob.status) != "OPTIMAL"
 			status = :UNSAT
+			#@debug "iis contains constraints"
+			#global varnames
+			#for c in iis_temp
+			#	@debug prettyprint(c, varnames)
+			#end
 			# retrieve the abstraction variable a corresponding to the constraints in iis_temp
 			negations = reduce(vcat, map( (m) -> SAT.not(m.abstract_expr), filter( (m) -> m.cvx_expr in iis_temp, prob.mapping)))
 			iis_cert = SAT.or(negations)
@@ -267,28 +277,28 @@ function smc_solve!(prob::SmcProblem, δ=1e-3, cvx_solver=SCS.Optimizer, max_ite
 			prob.status == :UNSAT
 			return
 		end
-		# c_construct generates a convex problem
-		cvx_prob = c_construct(prob)
-		s = CVX.Variable(length(cvx_prob.constraints))
-		global varnames
-		varnames[s.id_hash] = "s_iter_$i"
+		# c_construct generates the list of convex constraints
+		constraints = c_construct(prob)
+		s = CVX.Variable(length(constraints))
+		#global varnames
+		#varnames[s.id_hash] = "s_iter_$i"
 
 		# this is a call to Convex.jl # TODO eventually we will cache conic_form! and use that instead
-		ssf_prob, s = c_solve_ssf(cvx_prob, s, δ, cvx_solver)
+		ssf_prob, s = c_solve_ssf(constraints, s, prob.objective, δ, cvx_solver)
 		@debug "solve! optval $(ssf_prob.optval)"
-		@debug "Convex problem:"
-		for c in ssf_prob.constraints
-			@debug "$(prettyprint(c, varnames))"
-		end
+		#@debug "Convex problem:"
+		#for c in ssf_prob.constraints
+		#	@debug "$(prettyprint(c, varnames))"
+		#end
 
 		#println("sorted\n$(s.value[sortperm(reshape(s.value, (length(s),)))])")
-		if ssf_prob.optval < δ #string(cvx_prob.status) == "OPTIMAL"
+		if sum(abs.(s.value)) < δ #string(cvx_prob.status) == "OPTIMAL"
 			prob.status = :SAT
-			@debug "solve! status is SAT"
+			@debug "solve! optval $(ssf_prob.optval), status is SAT"
 			return
 		else
 			# generate IIS certificate
-			cc, s = iis(prob, cvx_prob, s, δ)
+			cc, s = iis(prob, constraints, s, δ)
 			prob.abstract_constraints = vcat(prob.abstract_constraints, cc)
 		end
 		i += 1

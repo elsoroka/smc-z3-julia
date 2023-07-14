@@ -1,6 +1,6 @@
 include("smc.jl")
 push!(LOAD_PATH, "../../../../research/BooleanSatisfiability.jl/src/")
-ENV["JULIA_DEBUG"] = true
+ENV["JULIA_DEBUG"] = Main
 import BooleanSatisfiability as SAT
 println("self test")
 import Convex
@@ -38,7 +38,7 @@ end
 
 function outside_box_at_step(xi, yi, box::Array{Float64}) :: Array{NodeType}
     x1, y1, x2, y2 = box
-    return [(xi <= x1) ∨ (xi >= x2), (yi <= y1) ∨ (yi >= y2)]
+    return [(xi <= x1) ∨ (xi >= x2) ∨ (yi <= y1) ∨ (yi >= y2)]
 end
 function outside_box_in_interval(x, y, box, N1=1, N2=Inf)
     if length(x) != length(y)
@@ -47,29 +47,34 @@ function outside_box_in_interval(x, y, box, N1=1, N2=Inf)
     if isinf(N2)
         N2 = min(length(x), length(y))
     end
-    return reduce(vcat, map( (i) -> outside_box_at_step(x[i], y[i], box), N1:N2 ))
+    xys = Any[(x[i], y[i]) for i=N1:N2]
+    append!(xys, [(0.5*(x[i]+x[i+1]), 0.5*(y[i] + y[i+1])) for i=N1:N2-1])
+    return reduce(vcat, map( xy -> outside_box_at_step(xy[1], xy[2], box), xys ))
 end
 
-umax = 5.0
-control_bounds = map( (i) -> Convex.square(x[i]) + Convex.square(y[i]) <= umax, 1:N )
+umax = 10.0
+#control_bounds = map( (i) -> Convex.square(x[i]-x[i-1]) + Convex.square(y[i]-y[i-1]) <= umax, 2:N )
+control_bounds_x = map( (i) -> Convex.abs(x[i]-x[i-1]) <= umax, 2:N )
+control_bounds_y = map( (i) -> Convex.abs(y[i]-y[i-1]) <= umax, 2:N )
 
 constraints = vcat(
     [x >= bounds[1], y >= bounds[2], x <= bounds[3], y <= bounds[4],
      x[1] == start[1], y[1] == start[2], x[end] == goal[1], y[end] == goal[2]],
-                  # control_bounds,
+                   control_bounds_x, control_bounds_y,
                    outside_box_in_interval(x, y, obs_1),
-                  # outside_box_in_interval(x, y, obs_2),
-                  # outside_box_in_interval(x, y, obs_3),
+                   #outside_box_in_interval(x, y, obs_2),
+                   #outside_box_in_interval(x, y, obs_3),
                   )
 
+obj = Convex.sumsquares(x[2:end]-x[1:end-1]) + Convex.sumsquares(y[2:end]-y[1:end-1])
 prob = SmcProblem(constraints)
-smc_solve!(prob)
-#abstraction!(prob)
+smc_solve!(prob, 1e-2, SCS.Optimizer, 500)
+
 println("all true:")
-println(x.value .>= bounds[1])
-println(x.value .<= bounds[3])
-println(y.value .>= bounds[2])
-println(y.value .<= bounds[4])
+println(round.(x.value .- bounds[1], digits=3))
+println(round.(-x.value .+ bounds[3], digits=3))
+println(round.(y.value .- bounds[2], digits=3))
+println(round.(-y.value .+ bounds[4], digits=3))
 println("$(x.value[1]) = $(start[1])\n$(y.value[1]) = $(start[2])
 $(x.value[end]) = $(goal[1])\n$(y.value[end]) = $(goal[2])")
 println(round.(x.value, digits=2))
