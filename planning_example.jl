@@ -3,12 +3,13 @@ push!(LOAD_PATH, "../../../../research/BooleanSatisfiability.jl/src/")
 ENV["JULIA_DEBUG"] = Main
 import BooleanSatisfiability as SAT
 import Convex
-using Plots
+using Profile
+#using Plots
 
 # In this problem we want to plan a 2D trajectory x,y over N steps
 # TODO we may complicate it later by adding a quadratic approximation to nonlinear dynamics
 
-N = 10
+N = 16
 x = Convex.Variable(N)
 y = Convex.Variable(N)
 global varnames = Dict(x.id_hash => "x", y.id_hash => "y")
@@ -48,11 +49,11 @@ function outside_box_in_interval(x, y, box, N1=1, N2=Inf)
         N2 = min(length(x), length(y))
     end
     xys = Any[(x[i], y[i]) for i=N1:N2]
-    append!(xys, [(0.5*(x[i]+x[i+1]), 0.5*(y[i] + y[i+1])) for i=N1:N2-1])
+    #append!(xys, [(0.5*(x[i]+x[i+1]), 0.5*(y[i] + y[i+1])) for i=N1:N2-1])
     return reduce(vcat, map( xy -> outside_box_at_step(xy[1], xy[2], box), xys ))
 end
 
-umax = 1.0
+umax = 1.5
 #control_bounds = map( (i) -> Convex.square(x[i]-x[i-1]) + Convex.square(y[i]-y[i-1]) <= umax, 2:N )
 control_bounds_x = map( (i) -> Convex.abs(x[i]-x[i-1]) <= umax, 2:N )
 control_bounds_y = map( (i) -> Convex.abs(y[i]-y[i-1]) <= umax, 2:N )
@@ -66,8 +67,9 @@ constraints = vcat(
                    outside_box_in_interval(x, y, obs_3),
                   )
 
-obj = Convex.sumsquares(x[2:end]-x[1:end-1]) + Convex.sumsquares(y[2:end]-y[1:end-1])
-prob = SmcProblem(0.0, constraints)
+obj = Convex.sumsquares(x[3:end]-2.0*x[2:end-1] + x[1:end-2] ) +
+      Convex.sumsquares(y[3:end]-2.0*y[2:end-1] + y[1:end-2] )
+prob = SmcProblem(obj, constraints)
 smc_solve!(prob, 1e-2, SCS.Optimizer, 500)
 
 println("all true:")
@@ -80,6 +82,7 @@ $(x.value[end]) = $(goal[1])\n$(y.value[end]) = $(goal[2])")
 println(round.(x.value, digits=2))
 println(round.(y.value, digits=2))
 
+using Plots
 plot_rect(obs) = (obs[[1,3,3,1,1]], obs[[2,2,4,4,2]])
 
 function plot_env()
@@ -94,3 +97,4 @@ end
 plot_env()
 plot!(x.value, y.value, color=:green)
 scatter!(x.value, y.value, color=:green, markersize=5)
+savefig("out.pdf")

@@ -183,7 +183,7 @@ end
 
 # solve sum-of-slack problem which is equivalent to original when all slack vars are 0
 # returns a new, solved convex problem and list of slack variables
-function c_solve_ssf(constraints, obj, δ=1e-3, cvx_solver=SCS.Optimizer)
+function c_solve_ssf(constraints::Array{T}, obj, δ=1e-3, cvx_solver=SCS.Optimizer) where T <: Convex.Constraint
 	# TODO URGENT - 4/10/23 - this is the culprit.
 	# We shouldn't make NEW slack variables.
 	# We should attach them to the Problem and reuse the same ones.
@@ -192,22 +192,31 @@ function c_solve_ssf(constraints, obj, δ=1e-3, cvx_solver=SCS.Optimizer)
 	L = length(constraints)
 	s = Convex.Variable(L)
 
-	C_ssf = Convex.Constraint[]
-	for pair in zip(constraints, s)
-		push!(C_ssf, add_s(pair))
+	if isa(obj, Convex.AbstractExpr)
+		o_prob = Convex.minimize(obj, constraints)
+		Convex.solve!(o_prob, cvx_solver; silent_solver=true)
+		if string(o_prob.status) == "OPTIMAL"
+			return o_prob, zeros(L)
+		else
+			obj = 0.0
+		end
 	end
 
-	# Generate the sum-of-slack problem
-	ssf_prob = Convex.minimize(Convex.maximum(Convex.abs(s)) + obj)
-	ssf_prob.constraints += C_ssf
-
-	Convex.solve!(ssf_prob, cvx_solver; silent_solver=true)
-	return ssf_prob, s.value
+	if obj == 0.0
+		C_ssf = Convex.Constraint[]
+		for pair in zip(constraints, s)
+			push!(C_ssf, add_s(pair))
+		end
+		# Generate the sum-of-slack problem
+		ssf_prob = Convex.minimize(Convex.maximum(Convex.abs(s)), C_ssf)
+		Convex.solve!(ssf_prob, cvx_solver; silent_solver=true)
+		return ssf_prob, s.value
+	end
 end
 
 # algorithm 2 in Shoukry et al. page 13
 # TODO THERE IS STILL A BUG IN HERE
-function iis(prob::SmcProblem, constraints, δ=1e-3, cvx_solver=SCS.Optimizer)
+function iis(prob::SmcProblem, constraints::Array{T}, δ=1e-3, cvx_solver=SCS.Optimizer) where T <: Convex.Constraint
 	# step 1: get the optimal slack in each constraint
 	ssf_prob, s_value = c_solve_ssf(constraints, 0.0, δ, cvx_solver)
 	iis_cert = Array{SAT.Expr}(undef, 0)
